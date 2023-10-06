@@ -20,12 +20,13 @@ RawDatapoint = Dict[str, Optional[Union[List[str], List[List[str]]]]]
 
 
 def _make_empty_datapoint() -> RawDatapoint:
-    return {"source": None, "target": None, "morphemes": None}
+    return {"source": None, "translation":None, "target": None, "morphemes": None}
 
 
 def _check_datapoint(datapoint: RawDatapoint) -> bool:
     source, target, morphemes = (
         datapoint["source"],
+        datapoint["translation"],
         datapoint["target"],
         datapoint["morphemes"],
     )
@@ -98,7 +99,12 @@ def read_glossing_file(file) -> GlossingFileData:
 
                 assert raw_datapoints[-1]["target"] is None
                 raw_datapoints[-1]["target"] = labels
-
+            
+            elif line.startswith("\\l"):
+                trans = line[3:].split(" ")
+                assert raw_datapoints[-1]["translation"] is None
+                raw_datapoints[-1]["translation"] = trans
+            
             else:
                 continue
 
@@ -124,6 +130,7 @@ def read_glossing_file(file) -> GlossingFileData:
 
     # Unpack Datapoints
     sources = [datapoint["source"] for datapoint in raw_datapoints]
+    translations = [datapoint["translation"] for datapoint in raw_datapoints]
 
     if track == 2:
         morphemes = [datapoint["morphemes"] for datapoint in raw_datapoints]
@@ -143,6 +150,11 @@ def _make_source_sentence(
     source: List[str], sos_token: str = "[SOS]", eos_token: str = "[EOS]"
 ) -> List[str]:
     return [sos_token] + list(" ".join(source)) + [eos_token]
+
+def _make_translation_sentence(
+    translation: List[str], sos_token: str = "", eos_token: str = ""
+) -> List[str]:
+    return [sos_token] + list(" ".join(translation)) + [eos_token]
 
 
 def _make_word_extraction_index(
@@ -169,6 +181,29 @@ def _make_word_extraction_index(
 
     return word_extraction_index, word_lengths, word_batch_mapping
 
+def _make_trans_word_extraction_index(
+    translations: List[List[str]], trans_maximum_sentence_length: int, trans_start_offset: int = 1
+):
+    trans_word_extraction_index = []
+    trans_word_lengths = []
+    trans_word_batch_mapping = []
+    trans_words = []
+
+    for trans_i, translation in enumerate(translations):
+        trans_start_index = trans_i * trans_maximum_sentence_length + trans_start_offset
+        for trans_word in translation:
+            trans_stop_index = trans_start_index + len(trans_word)
+            trans_word_indices = torch.arange(trans_start_index, trans_stop_index, dtype=torch.long)
+            trans_word_extraction_index.append(trans_word_indices)
+            trans_word_lengths.append(trans_word_indices.shape[0])
+            trans_word_batch_mapping.append(trans_i)
+            trans_words.append(trans_word)
+            trans_start_index = trans_stop_index + 1
+
+    trans_word_extraction_index = nlp_pad_sequence(trans_word_extraction_index)
+    trans_word_lengths = torch.tensor(trans_word_lengths).long()
+
+    return trans_word_extraction_index, trans_word_lengths, trans_word_batch_mapping
 
 def indices_to_tensor(indices: List[List[int]]) -> torch.Tensor:
     return nlp_pad_sequence([torch.tensor(idx).long() for idx in indices])
@@ -180,8 +215,10 @@ def _batch_collate(
     target_tokenizer: Vocab,
     sos_token: str = "[SOS]",
     eos_token: str = "[EOS]",
+    sot_token: str = "",
+    eot_token: str = "",
 ):
-    sources, targets, morphemes = zip(*batch)
+    sources, targets, morphemes,translations = zip(*batch)
 
     # Encode Source Sentences (character level)
     make_source_sentence = partial(
@@ -194,6 +231,19 @@ def _batch_collate(
     source_sentence_lengths = torch.tensor(
         [len(source) for source in source_sentences]
     ).long()
+    
+    # Encode translation Sentences (character level)
+    make_translation_sentence = partial(
+        _make_translation_sentence, sos_token=sot_token, eos_token=eot_token
+    )
+    translation_sentences = [make_translation_sentence(translation) for translation in translations]
+    translation_sentences = [translation_tokenizer(translation) for translation in translation_sentences]
+
+    translation_sentence_tensors = indices_to_tensor(translation_sentences)
+    translation_sentence_lengths = torch.tensor(
+        [len(translation) for translation in translation_sentences]
+    ).long()
+
 
     # Make Word Extraction Index
     maximum_sentence_length = source_sentence_tensors.shape[1]
@@ -204,6 +254,17 @@ def _batch_collate(
     ) = _make_word_extraction_index(
         sources=sources, maximum_sentence_length=maximum_sentence_length
     )
+
+     # Make Word Extraction Index_translation
+    trans_maximum_sentence_length = translation_sentence_tensors.shape[1]
+    (
+        trans_word_extraction_index,
+        trans_word_lengths,
+        trans_word_batch_mapping,
+    ) = _make_trans_word_extraction_index(
+        translations=translations, trans_maximum_sentence_length=trans_maximum_sentence_length
+    )
+
 
     # Make Morpheme Extraction Index (In Case of Track 2)
     if all(ms is not None for ms in morphemes):
@@ -248,6 +309,11 @@ def _batch_collate(
         word_batch_mapping=word_batch_mapping,
         word_targets=word_target_tensors,
         word_target_lengths=word_target_lengths,
+        trans_sentences=translation_sentence_tensors,
+        trans_sentence_lengths=translation_sentence_lengths,
+        trans_word_lengths=trans_word_lengths,
+        trans_word_extraction_index=trans_word_extraction_index,
+        trans_word_batch_mapping=trans_word_batch_mapping,
         morpheme_extraction_index=morpheme_extraction_index,
         morpheme_lengths=morpheme_lengths,
         morpheme_word_mapping=morpheme_word_mapping,
@@ -273,6 +339,7 @@ class SequencePairDataset(Dataset):
             self.dataset.sources[idx],
             self.dataset.targets[idx],
             self.dataset.morphemes[idx],
+            self.dataset.translations[idx],
         )
 
 
@@ -308,6 +375,15 @@ class GlossingDataset(LightningDataModule):
                     self.source_alphabet.update(set(word))
             self.source_alphabet = list(sorted(self.source_alphabet))
 
+            ####translation
+            self.translation_alphabet = set()
+            self.translation_alphabet.add(" ")
+            for translation in train_data.translations:
+                for trans_word in translation:
+                    self.translation_alphabet.update(set(trans_word))
+            self.translation_alphabet = list(sorted(self.translation_alphabet))
+
+
             self.target_alphabet = set()
             for target in train_data.targets:
                 for word_labels in target:
@@ -316,6 +392,7 @@ class GlossingDataset(LightningDataModule):
 
             self.source_alphabet_size = len(self.source_alphabet) + 4
             self.target_alphabet_size = len(self.target_alphabet) + 4
+            self.translation_alphabet_size = len(self.translation_alphabet) + 4
 
             self.source_tokenizer = build_vocab_from_iterator(
                 [[symbol] for symbol in self.source_alphabet],
@@ -325,13 +402,20 @@ class GlossingDataset(LightningDataModule):
                 [[symbol] for symbol in self.target_alphabet],
                 specials=self.special_tokens,
             )
+            self.translation_tokenizer = build_vocab_from_iterator(
+                [[symbol] for symbol in self.translation_alphabet],
+                specials=self.special_tokens,
+            )
+
             self.source_tokenizer.set_default_index(1)
             self.target_tokenizer.set_default_index(1)
+            self.translation_tokenizer.set_default_index(1)
 
             self._batch_collate = partial(
                 _batch_collate,
                 source_tokenizer=self.source_tokenizer,
                 target_tokenizer=self.target_tokenizer,
+                translation_tokenizer=self.translation_tokenizer,
             )
 
         if stage == "test" or stage is None:

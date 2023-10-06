@@ -20,6 +20,7 @@ class MorphemeGlossingModel(LightningModule):
         self,
         source_alphabet_size: int,
         target_alphabet_size: int,
+        translation_alphabet_size: int,
         hidden_size: int = 128,
         num_layers: int = 1,
         dropout: float = 0.0,
@@ -31,6 +32,7 @@ class MorphemeGlossingModel(LightningModule):
         super().__init__()
         self.source_alphabet_size = source_alphabet_size
         self.target_alphabet_size = target_alphabet_size
+        self.translation_alphabet_size = translation_alphabet_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.dropout = dropout
@@ -46,6 +48,13 @@ class MorphemeGlossingModel(LightningModule):
             embedding_dim=self.embedding_size,
             padding_idx=0,
         )
+
+        self.translation_embeddings = nn.Embedding(
+            num_embeddings=self.translation_alphabet_size,
+            embedding_dim=self.embedding_size,
+            padding_idx=0,
+        )
+
         self.encoder = BiLSTMEncoder(
             input_size=self.embedding_size,
             hidden_size=self.hidden_size,
@@ -53,7 +62,16 @@ class MorphemeGlossingModel(LightningModule):
             dropout=self.dropout,
             projection_dim=self.hidden_size,
         )
-        self.classifier = nn.Linear(self.hidden_size, self.target_alphabet_size)
+
+        self.translation_encoder = BiLSTMEncoder(
+            input_size=self.embedding_size,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            dropout=self.dropout,
+            projection_dim=self.hidden_size,
+        )
+
+        self.classifier = nn.Linear(self.hidden_size*2, self.target_alphabet_size)
         self.cross_entropy = nn.CrossEntropyLoss(ignore_index=0)
 
         if self.learn_segmentation:
@@ -75,6 +93,11 @@ class MorphemeGlossingModel(LightningModule):
     def encode_sentences(self, sentences: Tensor, sentence_lengths: Tensor) -> Tensor:
         char_embeddings = self.embeddings(sentences)
         char_encodings = self.encoder(char_embeddings, sentence_lengths)
+        return char_encodings
+
+    def encode_trans_sentences(self, sentences: Tensor, sentence_lengths: Tensor) -> Tensor:
+        char_embeddings = self.translation_embeddings(sentences)
+        char_encodings = self.translation_encoder(char_embeddings, sentence_lengths)
         return char_encodings
 
     def get_words(self, encodings: Tensor, word_extraction_index: Tensor):
@@ -127,6 +150,11 @@ class MorphemeGlossingModel(LightningModule):
         )
         word_encodings = self.get_words(char_encodings, batch.word_extraction_index)
 
+        trans_char_encodings = self.encode_trans_sentences(
+            batch.trans_sentences, batch.trans_sentence_lengths.cpu()
+        )
+        translation_word_encodings = self.get_words(trans_char_encodings, batch.trans_word_extraction_index)
+
         if self.classify_num_morphemes:
             num_morphemes_per_word = self.get_num_morphemes(
                 word_encodings, batch.word_lengths
@@ -156,7 +184,9 @@ class MorphemeGlossingModel(LightningModule):
             )
             best_path_matrix = None
 
-        morpheme_scores = self.classifier(morpheme_encodings)
+        combined_encodings = torch.cat((morpheme_encodings,translation_word_encodings))
+        morpheme_scores = self.classifier(combined_encodings)
+        #morpheme_scores = self.classifier(morpheme_encodings)
 
         return {
             "num_morphemes_per_word_scores": num_morphemes_per_word_scores,

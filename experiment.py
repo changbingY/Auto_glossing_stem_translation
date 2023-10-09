@@ -138,6 +138,7 @@ def _make_model(
         return MorphemeGlossingModel(
             source_alphabet_size=dataset.source_alphabet_size,
             target_alphabet_size=dataset.target_alphabet_size,
+            translation_alphabet_size=dataset.translation_alphabet_size,
             hidden_size=hyperparameters.hidden_size,
             num_layers=hyperparameters.num_layers,
             dropout=hyperparameters.dropout,

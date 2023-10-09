@@ -71,7 +71,11 @@ class MorphemeGlossingModel(LightningModule):
             projection_dim=self.hidden_size,
         )
 
-        self.classifier = nn.Linear(self.hidden_size*2, self.target_alphabet_size)
+        self.classifier = nn.Sequential(
+             nn.Linear(self.hidden_size * 2, self.hidden_size),
+             nn.GELU(),
+             nn.Linear(self.hidden_size, self.target_alphabet_size)
+        )
         self.cross_entropy = nn.CrossEntropyLoss(ignore_index=0)
 
         if self.learn_segmentation:
@@ -184,7 +188,12 @@ class MorphemeGlossingModel(LightningModule):
             )
             best_path_matrix = None
 
-        combined_encodings = torch.cat((morpheme_encodings,translation_word_encodings))
+        translation_word_encodings = torch.mean(translation_word_encodings, dim=(0,1)).unsqueeze(0)
+        combined_encodings = torch.cat(
+            (morpheme_encodings,
+            translation_word_encodings.repeat(morpheme_encodings.size(0), 1)),
+            dim=1
+        )
         morpheme_scores = self.classifier(combined_encodings)
         #morpheme_scores = self.classifier(morpheme_encodings)
 

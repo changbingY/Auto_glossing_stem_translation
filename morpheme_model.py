@@ -188,7 +188,10 @@ class MorphemeGlossingModel(LightningModule):
             )
             best_path_matrix = None
 
+        ####using average
         translation_word_encodings = torch.mean(translation_word_encodings, dim=(0,1)).unsqueeze(0)
+        ####using last state
+        translation_word_encodings = torch.mean(translation_word_encodings, dim=1)[-1] 
         combined_encodings = torch.cat(
             (morpheme_encodings,
             translation_word_encodings.repeat(morpheme_encodings.size(0), 1)),

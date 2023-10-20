@@ -15,7 +15,10 @@ from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import ExponentialLR
 from morpheme_segmenter import UnsupervisedMorphemeSegmenter
 from attention import Attn
+from masked_cross_entropy import *
+from collections import defaultdict
 
+#.cuda()
 
 class MorphemeGlossingModel(LightningModule):
     def __init__(
@@ -154,6 +157,41 @@ class MorphemeGlossingModel(LightningModule):
         morpheme_encodings = sum_pool_2d(morpheme_encodings, lengths=morpheme_lengths)
 
         return morpheme_encodings
+    
+    def align_morphemes_with_translations(self, morpheme_encodings, translation_encodings, num_morphemes_per_word, word_batch_mapping, trans_word_batch_mapping):
+        """ Align morphemes with translations for attention computation
+        Args:
+            morpheme_encodings: tensor [num_morphemes, hidden_size]
+            translation_encodings: tensor [num_trans_words, num_trans_chars_per_word, hidden_size]
+            num_morphemes_per_word: tensor [num_words]
+            word_batch_mapping: list [num_words]
+            trans_word_batch_mapping: list [num_trans_words]
+        Return:
+            morpheme_encodings_per_batch: dict, key batch_id, value tensor [num_morphemes_per_batch, hidden_size]
+            trans_encodings_per_batch: dict, key batch_id, value tensor [num_trans_words_per_batch, hidden_size]
+        """
+        num_morphemes_per_batch = defaultdict(int)
+        assert len(num_morphemes_per_word) == len(word_batch_mapping)
+        for num_morphemes, batch_index in zip(num_morphemes_per_word, word_batch_mapping):
+            num_morphemes_per_batch[batch_index] += num_morphemes
+        print('num_morphemes_per_batch')
+        print(num_morphemes_per_batch)
+        morpheme_encodings_per_batch = {}
+        morpheme_index = 0
+        for batch_index, num_morphemes in num_morphemes_per_batch.items():
+            morpheme_encodings_per_batch[batch_index] = morpheme_encodings[morpheme_index:morpheme_index+ num_morphemes]
+            morpheme_index += num_morphemes
+    
+        trans_encodings_per_batch = defaultdict(list)
+        translation_encodings = torch.mean(translation_encodings, dim=1)  # [num_trans_words, hidden_size]
+        assert translation_encodings.size()[0] == len(trans_word_batch_mapping)
+        for i in range(len(trans_word_batch_mapping)):
+            batch_index = trans_word_batch_mapping[i]
+            trans_encodings_per_batch[batch_index].append(translation_encodings[i])
+        for batch_index in trans_encodings_per_batch.keys():
+            trans_encodings_per_batch[batch_index] = torch.stack(trans_encodings_per_batch[batch_index], dim=0)
+    
+        return morpheme_encodings_per_batch, trans_encodings_per_batch
 
     def forward(self, batch: Batch, training: bool = True):
         char_encodings = self.encode_sentences(
@@ -191,33 +229,44 @@ class MorphemeGlossingModel(LightningModule):
                 num_morphemes_per_word,
                 training=training,
             )
-            #trans_morpheme_encodings, trans_best_path_matrix = self.segmenter(
-             #   translation_word_encodings,
-              #  batch.trans_word_lengths,
-              #  num_morphemes_per_word,
-               # training=training,
-            #)
+            
         else:
             assert batch.morpheme_extraction_index is not None
             morpheme_encodings = self.get_morphemes(
                 word_encodings, batch.morpheme_extraction_index, batch.morpheme_lengths
             )
             best_path_matrix = None
-  
+            #trans_best_path_matrix = None
+            #trans_morpheme_encodings = self.get_morphemes(
+            #translation_word_encodings, batch.morpheme_extraction_index, batch.morpheme_lengths)
+            #print('trans_morpheme_encoding')
+            #print(trans_morpheme_encodings.size())
+        
         translation_attention_encodings = []
         
-        translation_word_encodings = torch.mean(translation_word_encodings,dim=1)
-        for each_morpheme_encoding in morpheme_encodings:
+        morpheme_encodings_per_batch, trans_encodings_per_batch = self.align_morphemes_with_translations(morpheme_encodings, translation_word_encodings, num_morphemes_per_word, batch.word_batch_mapping, batch.trans_word_batch_mapping)
             
-            attn_score = self.attn(each_morpheme_encoding,translation_word_encodings)
-            each_attention_trans = torch.sum(attn_score * translation_word_encodings,dim=0)
-            translation_attention_encodings.append(each_attention_trans)
-    
-        translation_attention_encodings = torch.stack(translation_attention_encodings)
-        
+        translation_attention_encodings = []
+        for batch_index in morpheme_encodings_per_batch.keys():
+            translation_attention_encodings_this_batch = []
+            morpheme_encodings_this_batch = morpheme_encodings_per_batch[batch_index]
+            trans_encodings_this_batch = trans_encodings_per_batch[batch_index]
+            if not morpheme_encodings_this_batch.size()[0]:
+                continue
+            for each_morpheme_encoding in morpheme_encodings_this_batch:
+                attn_score = self.attn(each_morpheme_encoding, trans_encodings_this_batch)
+                each_attention_trans = torch.sum(attn_score * trans_encodings_this_batch, dim=0)
+                translation_attention_encodings_this_batch.append(each_attention_trans)
+            translation_attention_encodings_this_batch = torch.stack(translation_attention_encodings_this_batch)
+            
+            
+            translation_attention_encodings.append(translation_attention_encodings_this_batch)
+            
+        translation_attention_encodings = torch.cat(translation_attention_encodings, dim=0)
+
         combined_encodings = torch.cat(
-            (morpheme_encodings,
-            translation_attention_encodings),dim=1
+            (morpheme_encodings.cuda(),
+            translation_attention_encodings.cuda()),dim=1
         )
         
         morpheme_scores = self.classifier(combined_encodings)

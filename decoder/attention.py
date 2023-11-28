@@ -109,7 +109,9 @@ class LuongAttnDecoderRNN(nn.Module):
             last_hidden = torch.zeros_like(embedded)
         rnn_output, hidden = self.gru(embedded, last_hidden)
 
-        # Calculate attention from current RNN state and all encoder outputs;
+        # Calculate attention from current RNN state and all encoder outputs; 
+
+        ######### not morpheme to all sentence, restrict the attention, using masking
         # apply to encoder outputs to get weighted average
         attn_weights = self.attn(rnn_output, encoder_outputs)
         context = attn_weights.bmm(encoder_outputs) # B x S=1 x N

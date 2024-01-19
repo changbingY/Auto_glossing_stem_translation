@@ -26,11 +26,16 @@ class Attn(nn.Module):
         #    self.attn = nn.Linear(self.hidden_size, hidden_size)
 
         #if self.method == 'concat':
-        self.attn = nn.Linear(self.hidden_size * 2, hidden_size)
+        #self.attn = nn.Linear(self.hidden_size +768, hidden_size)
+        self.attn_source = nn.Linear(self.hidden_size * 2, hidden_size)
+        self.attn_trans = nn.Linear(self.hidden_size +768, hidden_size)
         #self.v = nn.Parameter(torch.FloatTensor(hidden_size))
-        self.v = nn.Linear(self.hidden_size, 1)
+        #self.v = nn.Linear(self.hidden_size, 1)
+        self.v_source = nn.Linear(self.hidden_size, 1)
+        #self.v = nn.Linear(hidden_size, 1)
+        self.v_trans = nn.Linear(self.hidden_size, 1)
 
-    def forward(self, hidden, encoder_outputs):
+    def forward(self, hidden, encoder_outputs,attn_type="source"):
         """Attention computation.
         Args:
             hidden: tensor [1, batch_size, hidden_size]
@@ -53,8 +58,14 @@ class Attn(nn.Module):
            # for i in range(max_len):
              #   attn_energies[b, i] = self.score(hidden[:, b].squeeze(0), encoder_outputs[b, i])
         hidden = hidden.squeeze(0).unsqueeze(1).repeat((1, max_len, 1))
-        attn_energies = self.attn(torch.cat((hidden, encoder_outputs), dim=2))
-        attn_energies = self.v(attn_energies).squeeze(2)
+        if attn_type == "source":
+            attn_energies = self.attn_source(torch.cat((hidden, encoder_outputs), dim=2))
+            attn_energies = self.v_source(attn_energies).squeeze(2)
+        elif attn_type == "trans":
+            attn_energies = self.attn_trans(torch.cat((hidden, encoder_outputs), dim=2))
+            attn_energies = self.v_trans(attn_energies).squeeze(2)
+        #attn_energies = self.attn(torch.cat((hidden, encoder_outputs), dim=2))
+        #attn_energies = self.v(attn_energies).squeeze(2)
         # Normalize energies to weights in range 0 to 1, resize to B x 1 x S
         return F.softmax(attn_energies,dim=1).unsqueeze(1)
     
@@ -93,7 +104,9 @@ class LuongAttnDecoderRNN(nn.Module):
         self.concat = nn.Linear(hidden_size * 2, hidden_size)
         #self.combine = nn.Linear(hidden_size * 2, hidden_size)
         self.combine_input = nn.Linear(hidden_size * 2, hidden_size)
-        self.combine_context = nn.Linear(hidden_size * 2, hidden_size)
+        #self.combine_input = nn.Linear(512 * 2, 512)
+        self.combine_context = nn.Linear(hidden_size +768, hidden_size)
+        #self.combine_context = nn.Linear(512 * 2,512)
         self.out = nn.Linear(hidden_size, output_size)
         
         # Choose attention model
@@ -112,6 +125,8 @@ class LuongAttnDecoderRNN(nn.Module):
         # Get current hidden state from input word and last hidden state
         if last_hidden is None:
             last_hidden = torch.zeros_like(embedded)
+            #last_hidden = torch.zeros(self.n_layers, batch_size, self.hidden_size).cuda()
+
         rnn_output, hidden = self.gru(embedded, last_hidden)
 
         # Calculate attention from current RNN state and all encoder outputs;
@@ -121,8 +136,13 @@ class LuongAttnDecoderRNN(nn.Module):
         assert isinstance(encoder_outputs, list) and len(encoder_outputs) == 2
         contexts = []
         attention_weights = []
-        for enc_outputs in encoder_outputs:
-            attn_weights = self.attn(rnn_output, enc_outputs)
+        for i, enc_outputs in enumerate(encoder_outputs):
+            if i == 0:
+                attn_type = "source"
+            elif i == 1:
+                attn_type = "trans"
+            attn_weights = self.attn(rnn_output, enc_outputs, attn_type)
+            #attn_weights = self.attn(rnn_output, enc_outputs)
             context = attn_weights.bmm(enc_outputs) # B x S=1 x N
             contexts.append(context.squeeze(1))
             attention_weights.append(attn_weights)

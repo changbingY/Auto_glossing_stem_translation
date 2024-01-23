@@ -100,7 +100,7 @@ class LuongAttnDecoderRNN(nn.Module):
         # Define layers
         self.embedding = nn.Embedding(output_size, hidden_size, padding_idx=PAD_TOKEN)
         self.embedding_dropout = nn.Dropout(dropout)
-        self.gru = nn.GRU(hidden_size, hidden_size, n_layers, dropout=dropout)
+        self.lstm = nn.LSTM(hidden_size, hidden_size, n_layers, dropout=dropout)
         self.concat = nn.Linear(hidden_size * 2, hidden_size)
         #self.combine = nn.Linear(hidden_size * 2, hidden_size)
         self.combine_input = nn.Linear(hidden_size * 2, hidden_size)
@@ -124,10 +124,10 @@ class LuongAttnDecoderRNN(nn.Module):
 
         # Get current hidden state from input word and last hidden state
         if last_hidden is None:
-            last_hidden = torch.zeros_like(embedded)
+            last_hidden = (torch.zeros_like(embedded),torch.zeros_like(embedded))
             #last_hidden = torch.zeros(self.n_layers, batch_size, self.hidden_size).cuda()
 
-        rnn_output, hidden = self.gru(embedded, last_hidden)
+        rnn_output, (hidden,cell) = self.lstm(embedded, last_hidden)
 
         # Calculate attention from current RNN state and all encoder outputs;
         # apply to encoder outputs to get weighted average
@@ -160,4 +160,4 @@ class LuongAttnDecoderRNN(nn.Module):
         output = self.out(concat_output)
 
         # Return final output, hidden state, and attention weights (for visualization)
-        return output, hidden, attention_weights
+        return output, (hidden,cell), attention_weights

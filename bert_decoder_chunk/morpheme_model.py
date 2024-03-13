@@ -230,6 +230,8 @@ class MorphemeGlossingModel(LightningModule):
             )
             best_path_matrix = None
         # ipdb.set_trace()
+        if num_morphemes_per_word is None:
+            num_morphemes_per_word = torch.tensor(np.bincount(batch.morpheme_word_mapping))
         # Align morphemes and translations
         aligned_word_encodings = self.align_words(word_encodings, num_morphemes_per_word)
         aligned_trans_encodings = self.align_translations(trans_bert_encodings, num_morphemes_per_word, batch.word_batch_mapping)

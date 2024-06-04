@@ -5,7 +5,7 @@ import openai
 openai.api_key = '.....'
 
 # Load the CSV file
-data = pd.read_csv('/content/drive/MyDrive/gitksan_stem_trans/Gitksan_prompt/git_word_overlap.csv')
+data = pd.read_csv('git_word_overlap.csv')
 
 # Function to create the prompt
 def create_prompt(example):

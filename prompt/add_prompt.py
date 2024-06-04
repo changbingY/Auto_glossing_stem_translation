@@ -38,7 +38,7 @@ def get_corrected_gloss(prompt):
     return corrected_gloss
 
 # Process each test item and get the corrected gloss
-with open('/content/drive/MyDrive/gitksan_stem_trans/Gitksan_prompt/git_longsub_corrected.txt', 'w') as file:
+with open('git_word_overlap_corrected.txt', 'w') as file:
   for index, row in data.iterrows():
       example = {
           'train1_raw': row['train1_raw'],
